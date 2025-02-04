@@ -1,6 +1,5 @@
-# Kafka
-
 <!-- TOC -->
+* [What is this repo?](#what-is-this-repo)
 * [Kafka](#kafka)
   * [Introduction](#introduction)
     * [Sources](#sources)
@@ -9,7 +8,7 @@
     * [Topic partitions](#topic-partitions)
   * [Use cases](#use-cases)
   * [Design choices of Kafka](#design-choices-of-kafka)
-      * [Sources](#sources-)
+      * [Sources](#sources-1)
     * [Motivation](#motivation)
     * [Persistence](#persistence)
       * [Don't fear file systems!](#dont-fear-file-systems)
@@ -25,9 +24,17 @@
       * [Static membership](#static-membership)
 <!-- TOC -->
 
+# What is this repo?
+
+This repository is my introduction to kafka, my first experience and practice of kafka. This README mostly covers my
+understanding of Kafka and the primary source of it is Kafka documentation version `3.9`.
+
+# Kafka
+
 ## Introduction
 
 ### Sources
+
 * https://kafka.apache.org/documentation/
 
 ### Events
@@ -35,40 +42,46 @@
 Events represents that something happened in the world or in our business. Any form of **read** or **write** from
 Kafka is in form of **events**. Events contain a key, value, timestamp and optional header metadata.
 Here's an example event:
+
 * Event key: "Alice"
 * Event value: "Made a payment of $200 to Bob"
 * Event timestamp: "Jun. 25, 2020 at 2:06 p.m."
 
 ### Topics
+
 Kafka organizes events in **Topics**. Very simplified, we can view Topics as directories in our system and events
-as files in those Topics. Topics in Kafka are always multi-producers and multi-consumers. Each topic can have zero, one, 
+as files in those Topics. Topics in Kafka are always multi-producers and multi-consumers. Each topic can have zero, one,
 or many producers and can have zero, one, or many consumers that subscribe to those events. Events in Kafka Topics can
 be read as often as needed unlike traditional messaging systems which would delete messages after consumption. Kafka
 Topics can be configured to hold messages as long as you want. Kafka performance is basically constant regardless of
 how long you retain your events in a Kafka Topic.
 
 ### Topic partitions
+
 Each Kafka topic is partitioned, meaning a topic is spread over many "buckets" located on different Kafka brokers.
 This placement of partitions is why we can read or write from/to many brokers at the same time. Each event that is
-published to a Kafka topic is appended to one of that topic's partitions; Every event with the same key (E.g.: 
-a customer or vehicle ID) are written to the same topic partition. Kafka guarantees that any consumer of a 
+published to a Kafka topic is appended to one of that topic's partitions; Every event with the same key (E.g.:
+a customer or vehicle ID) are written to the same topic partition. Kafka guarantees that any consumer of a
 topic partition will read the data (events) in the same order as they were written.
 
 To make the data fault-tolerant, each topic can be replicated across multiple geo-regions or datacenters.
 
-
 ## Use cases
+
 TODO
 
 ## Design choices of Kafka
 
-#### Sources 
+#### Sources
+
 * https://kafka.apache.org/documentation/#design
 
 ### Motivation
+
 They wanted to create a system where all the real-time data feeds of a system could be handled at a large scale,
-this explains some of the design choices that were made. 
+this explains some of the design choices that were made.
 This system need to fulfil these requirements:
+
 * High throughput
 * Low latency message delivery so it can be a replacement to handle more traditional messaging use-cases.
 * Handle failure and be resilient and guarantee fault-tolerance in case of system failure.
@@ -96,16 +109,16 @@ Also, because modern operating systems have some sort of disk caching (E.g.: in 
 avoids having an internal buffer for caching the data that is read from disk. Operating systems usually use read-ahead
 and write-behind to improve the performance of disk usage and Kafka is using this fact to increase its throughput. How
 you may ask? That's a great question.
-Because Kafka log files are immutable and append-only file structures, and because most of the time all consumers of 
+Because Kafka log files are immutable and append-only file structures, and because most of the time all consumers of
 a partition want the latest events, these events will end up on the OS page cache. Because of that, OS does not need
 to use a IO operation to get the latest events, instead it can serve them from the main memory, and this is why read
 speed of Kafka can be as fast as possible.
-
 
 #### Efficiency
 
 Because of how Kafka handles IO operations, disk access pattern have been eliminated. But we still have two more
 inefficiency to resolve:
+
 * Too many small I/O operations
 * Excessive byte copying
 
@@ -118,6 +131,7 @@ Kafka uses the same format for sending events over the network and storing them,
 and consumers all use a common structure. And because of that, Kafka can use zero-copy approach to send events via the
 network. To explain what is **zero-copy**, first we need to explain how a typical sending a file over the network looks
 like:
+
 * The operating system reads data from the disk into page cache in kernel space.
 * The application reads the data from kernel space into a user-space buffer.
 * The application writes the data back into kernel space into a socket buffer.
@@ -128,13 +142,13 @@ But with **zero-copy** approach, we can eliminate the application from the above
 eliminating memory buffers needed in application layer.
 
 This combination of page cache and zero-copy approach means that when all consumers of a topic are mostly caught
-up, we will see no read activity on disk. This is because once the recent events are requested from disk, they 
-will be cached by the operating system on page cache and the following requests will be fulfilled using OS page cache. 
-Also because of the zero-copy approach (and page cache), message consumption rate can reach the limit of the 
+up, we will see no read activity on disk. This is because once the recent events are requested from disk, they
+will be cached by the operating system on page cache and the following requests will be fulfilled using OS page cache.
+Also because of the zero-copy approach (and page cache), message consumption rate can reach the limit of the
 network connection.
 
 > TLS/SSL libraries work at the user space (in-kernel `SSL_sendfile` is currently not supported by Kafka 3.9). Due
-> to this restriction, `sendfile` is not used when SSL is enabled. For enabling SSL configuration, refer to 
+> to this restriction, `sendfile` is not used when SSL is enabled. For enabling SSL configuration, refer to
 > `security.protocol` and `security.inter.broker.protocol` configuration.
 
 #### End-to-end batch compression
@@ -145,9 +159,8 @@ algorithms usually work better when there is more data to be compressed at least
 like `gzip`. What that means is that mostly, compressing a batch of messages can reduce more than if those same messages are
 compressed one by one. Kafka producers can compress the batch messages send to Kafka. The broker will decompress the batch
 message to validate it's content (E.g.: validate the number of messages in a batch is the same as what that batch header states),
-but will **NOT** alter or decompress the batch message that is sent from the producer when storing them to the log file or when 
+but will **NOT** alter or decompress the batch message that is sent from the producer when storing them to the log file or when
 kafka is sending events to consumers.
-
 
 ### The producer
 
@@ -178,7 +191,6 @@ to accumulate more bytes (AKA batch events) before sending them to the broker. T
 a fixed number of messages and to wait no longer than a fixed latency bound (say 64K and 10ms). Batching is configurable
 and give a mechanism to trade off a small amount of latency for better throughput.
 
-
 ### The consumer
 
 The Kafka consumer works by issuing a `fetch` request to the brokers leading the partitions it wants to consumer. The consumer
@@ -192,15 +204,15 @@ the events to the consumer?". Answers to this question have pros and cons. Kafka
 by most messaging systems, where data is `pushed` by the publishers to the brokers and the data is `pulled` by the consumers
 from the broker. The reason being is throughput.
 
-Generally the goal is for the consumer to consume at the maximum possible rate; But in the case of messages being `pushed` 
+Generally the goal is for the consumer to consume at the maximum possible rate; But in the case of messages being `pushed`
 to consumers, the broker has to handle the difficult task to push to divers consumers, each with their own `consume rate`.
-This approach tends to overwhelm consumers by broker sending more event that can be consumed at any given time. 
+This approach tends to overwhelm consumers by broker sending more event that can be consumed at any given time.
 
 A `pull-based` system has the nicer property where each consumer can consume at their maximum possible rate, even if a consumer
 falls behind, it can simply catch up when it can. Another advantage is that a pull-based system lends itself to aggressive
 batching of data sent to the consumer. A `push-based` system must choose between low latency and high throughput. If tuned
 for **low-latency** the broker will send messages one at a time, each time a message arrives, it is pushed to the consumer
-only to be buffered in the consumer anyway. 
+only to be buffered in the consumer anyway.
 The `pull-based` approach fixes this as the consumer always pulls all the available events after its position in the log
 (or up to a configurable amount). So one gets maximum throughput without adding unnecessary latency.
 
@@ -217,12 +229,11 @@ to not use this approach is, and I quote (Kafka docs V3.9):
 > across many applications would not actually make things more reliable and would be a nightmare to operate. And in practice
 > we have found that we can run a pipeline with strong SLAs at large scale without a need for producer persistence.
 
-
 #### Consumer position
 
 Keeping track of what has been consumed, surprisingly, is a key performance point in messaging systems. Most systems keep
 metadata about what messages are consumed by each consumer. Keep tracking of what messages has been consumed can get very
-tricky. For example, a system can mark an `event` as **consumed** when it is sent to the consumer, but in the event of a 
+tricky. For example, a system can mark an `event` as **consumed** when it is sent to the consumer, but in the event of a
 network failure or any other failure, that message can be lost before reaching the consumer, or it has reached the consumer but
 the consumer crashes or fails to process that event. Because that `event` is set as **consumed** on the broker, it is
 never going to be sent out to other consumers, meaning this event is lost forever.
@@ -231,11 +242,11 @@ To fix this issue, many systems wait for an `acknowledgment` from the consumer b
 this can get tricky too, because now the system has two states, `sent` and `acknowledged`. This solution fixes our problem
 but creates more! Let's imagine a scenario where a message is sent and processed by the consumer, but it fails to send the
 `acknowledgement` to the broker, and because of that, the broker will re-send that event, and it will be re-consumed. The
-second problem is about performance. The system now needs to keep multiple status for each message (first to mark it as 
+second problem is about performance. The system now needs to keep multiple status for each message (first to mark it as
 `sent` to not send it again and then mark it as `consumed` so it can be removed). Tricky problems must be dealt with, like
 what to do with messages that are sent but never acknowledged.
 
-Kafka handles this differently. Each topic in Kafka is divided into `partitions`. Each partition can only be consumed a 
+Kafka handles this differently. Each topic in Kafka is divided into `partitions`. Each partition can only be consumed a
 single consumer within each subscribing group at any given time. This means that the **position** of the consumer in each
 partition is only a **single number** which makes the state of what has been consumed very small, just an integer for each
 partition. This `position` can be periodically checkpointed, this makes the equivalent of message acknowledgement very cheap.
@@ -245,20 +256,19 @@ the common contract of a queue, but turns out to be an essential feature for man
 code has a bug, and it is discovered after consuming some messages, the code can be fixed and the consumer now can **rewind**
 and re-consume those messages now that the bug has been fixed.
 
-
 #### offline data load
 
 Scalable persistence allows for the possibility of consumers that only periodically consume data such as batch data loads
 that periodically bulk-load data into an offline system such as Apache Hadoop or a relational data warehouse.
 
-In case of Hadoop we parallelize the data load by splitting over individual map tasks, one for each node/topic/partition 
+In case of Hadoop we parallelize the data load by splitting over individual map tasks, one for each node/topic/partition
 combination, allowing full parallelism in the loading. Hadoop provides task management, and tasks which fail can restart
 without danger of duplicate data, they simply restart from their original position.
 
 #### Static membership
 
 Static membership aims to improve the availability of stream applications, consumer groups and other applications built
-on top of the group `re-balance protocol`. The re-balance protocol relies on the group coordinator to allocate entity IDs 
+on top of the group `re-balance protocol`. The re-balance protocol relies on the group coordinator to allocate entity IDs
 to group members. These generated IDs are **ephemeral** and will change each time a members restart and rejoin. For consumer
 based applications, this "dynamic membership" can cause a large percentage of task re-assigned to different instances during
 administrative operations such as code deploy, configuration updates or periodic restarts. Motivated by this observation,
@@ -267,6 +277,6 @@ based on those ids, thus no re-balance will be triggered.
 
 To use this feature, the broker and the client need to be on version 2.3 or beyond and the configuration for static membership
 should be set. If the broker is on an older version than 2.3, but you configured Kafka to use static membership, the application
-will detect the broker version and then throws an `UnsupportedException`. If you accidentally configured duplicate ids 
+will detect the broker version and then throws an `UnsupportedException`. If you accidentally configured duplicate ids
 for different instances, a fencing mechanism on the broker side will inform your duplicate client to shut down immediatley
 by triggering a `org.apache.kafka.common.errors.FencedInstanceIdException`.
