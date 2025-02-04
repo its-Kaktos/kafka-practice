@@ -22,6 +22,10 @@
       * [Consumer position](#consumer-position)
       * [offline data load](#offline-data-load)
       * [Static membership](#static-membership)
+    * [Message delivery semantics](#message-delivery-semantics)
+      * [Semantics from producer point of view](#semantics-from-producer-point-of-view)
+      * [Semantics from the consumer point of view](#semantics-from-the-consumer-point-of-view)
+      * [Other](#other)
 <!-- TOC -->
 
 # What is this repo?
@@ -278,5 +282,79 @@ based on those ids, thus no re-balance will be triggered.
 To use this feature, the broker and the client need to be on version 2.3 or beyond and the configuration for static membership
 should be set. If the broker is on an older version than 2.3, but you configured Kafka to use static membership, the application
 will detect the broker version and then throws an `UnsupportedException`. If you accidentally configured duplicate ids
-for different instances, a fencing mechanism on the broker side will inform your duplicate client to shut down immediatley
+for different instances, a fencing mechanism on the broker side will inform your duplicate client to shut down immediately
 by triggering a `org.apache.kafka.common.errors.FencedInstanceIdException`.
+
+### Message delivery semantics
+
+Kafka provides some guarantees for consumers and publishers for message delivery. There are multiple possible message delivery
+semantics that can be provided:
+
+* *At most once*: Messages maybe lost but are **never** redelivered.
+* *At least once*: Messages are never lost but **may** be redelivered.
+* *Exactly once*: This is what most people want, messages are delivered **once and only once**.
+
+We can break down delivery semantics guarantees into two sections, delivery guarantees for **publishers** and **consumers**.
+
+Many systems claim to provide `exactly once` delivery semantics, but it is important to read the fine print, most of these claims
+are misleading (i.e. they don't to the case where the publisher or consumer can fail, cases where there are multiple consumer
+processes, or cases where the data written to the disk can be lost).
+
+#### Semantics from producer point of view
+
+Kafka's semantics are straight forward. When publishing a message we have a notion of the message being "commited" to the log. Once
+a message is *commited* it will never be lost as long as one broker that replicates the partition to which the message was written in
+remains "alive".
+> The definition of **commited messages**, **alive partition**, and what type of **failure** Kafka attempts to handle will be described in more detail in
+> the next section. For now lets assume a perfect **lossless** broker and try to understand the guarantees to the publishers and consumers.
+
+If a producer attempts to send a message and experiences a network error, it can not be sure if this error happened after message was
+commited in the broker or before that. Prior to `0.11.0.0` the producer had no choice but to resend that message. This provides at least
+once semantic delivery since the message could have been commited but because of a network error, the producer did not receive "ack" and
+will resend the message leading to duplicate event in the log. Since `0.11.0.0`, the Kafka producer also supports an idempotent delivery
+option which guarantees resending will not result in duplicate events in the log.
+To Achieve this, every producer is assigned an ID by the broker and deduplicates messages using a sequence number sent by the producer
+along with every message. Also, beginning with `0.11.0.0` the producer supports the ability to send messages to multiple topic partitions
+in a transaction-like semantics: i.e. either all messages are successfully written or none of them are. The main use case for this is
+**exactly once** delivery semantic between Kafka topics.
+
+Not all use cases require such strong guarantees. The producer can specify the desired level of durability. For example, it can choose
+to not wait for any acknowledgement from broker or wait for an acknowledgement of message was only written to that partition but have not
+been replicated, or it can wait for the message to be written to log and replicated across brokers.
+
+#### Semantics from the consumer point of view
+
+Now let's describe the semantics from the consumer point of view. All replicas have the exact same log with the same offsets. The consumer
+controls its offset in the log. If the consumer never crashed, it could have stored its offset into memory. But if the consumer fails, we
+want that partition to be taken over by another process, this required the new process to choose an appropriate offset. Let's say a consumer
+reads some messages, it has now several options for processing messages and updating its position:
+
+1. It can read the messages, save its new position to the log and then start processing messages. In this case there is a possibility that
+   the consumer saves its new position but fails or crashes **before** it can process the messages or save the result of the processing. Then
+   the new process that took over that partition would start at the new updated position that the previous process saved even though few messages
+   before that position are in fact **not processed**. This translates to *at most once* delivery semantic.
+2. It can read the messages, process them and then save its position into the log. In this case there is a possibility that the consumer successfully
+   processes and saves the result of those events but **fails** to update its new position in the log, which means that when a new process takes over the
+   partition, it will start reading the messages that are already **processed** by the preivous consumer. This translates to *at least once* delivery
+   semantic.
+
+#### Other
+
+So what about **exactly once delivery** semantic? When consuming from a topic and producing to another topic (as in a Kafka streams application), we can
+use the transaction capabilities in `0.11.0.0` that were mentioned. The consumer's position is saved as a message in a topic, so we write the offset to
+the Kafka in ths same transaction as the output topics receiving the processed data. If the transaction is **aborted**, the consumer position is reverted
+back to its original position and the produced data on the output topic will not be visible to other consumers depending on their **isolation level**. In
+default `read_uncommited` isolation level, all messages are visible to consumers even if they were part of an aborted transaction, but in the `read_commited`,
+the consumers will only see messages from transactions which are *commited* (and any messages which were **NOT** part of a transaction).
+
+When writing to an external system, the limitation is to coordinate the consumer position and with what is actually stored as the output. The classic way of
+handling this would be to introduce a *two phase commit* between the storage of the consumer position and the storage of the consumer output. But this can
+be handled more simply and generally by letting the consumer store its offset in the same place as its output. This is better because some of the systems
+that the consumer would want to write to can possibly **NOT** support a two phase commit. As an example of this, consider a Kafka connector which populates
+data in `HDFS` along with consumer position in the log, now it is guaranteed that either both the position and the data is updated or neither is.
+
+So effectively, Kafka supports exactly-once semantics in Kafka streams, and transactional producer/consumer can be used generally to provide exactly-once
+delivery when transferring and processing data between Kafka topics. Exactly-once delivery for other destination systems require cooperation with such
+system, but Kafka provides the offset which makes implementing this feasible (see also Kafka connect). Otherwise, Kafka guarantees *at-least-once* delivery
+by *default*, and allows users to implement *at-most-once* delivery by disabling retries on the producer and updating consumer position before prior to
+processing a batch of messages.
