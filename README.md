@@ -358,3 +358,54 @@ delivery when transferring and processing data between Kafka topics. Exactly-onc
 system, but Kafka provides the offset which makes implementing this feasible (see also Kafka connect). Otherwise, Kafka guarantees *at-least-once* delivery
 by *default*, and allows users to implement *at-most-once* delivery by disabling retries on the producer and updating consumer position before prior to
 processing a batch of messages.
+
+### 4.7 Replication
+
+Kafka replicates logs for topic's partitions across a configurable number of severs (this configuration can be set on a topic by topic bases). This allows
+automatic fail-overs to these replicas when a server in a cluster fails so the messages remain available.
+
+Other messaging systems provide some level of replication-related features, but I quote from Kafka docs "in our (totally biased) opinion, this appears to 
+be a tacked-on thing, not heavily used, and with large downsides: replicas are inactive, throughput is heavily impacted, it requires fiddly manual 
+configuration, etc.". On the other hand, Kafka is meant to be used with replication by default; In fact they implemented the un-replicated Kafka topics with
+normal Kafka topics where their `replication factor` is set to one.
+
+The unit of replication is the topic partition. Under non-failure conditions, each partition in Kafka has a single leader and zero or more followers. All writes
+goes through the leader and reads can either go through the leader or the followers. Typically, there are many more partitions than there are brokers and the
+leaders are distributed evenly among brokers. The log's on the replicas (followers) are identical to the leader, they all have the same offset and content in
+the same order (though, of course at any given time the leader can be some messages ahead of the followers because the writes goes through it.)
+
+Followers consume messages from the leader like any other consumer would and apply them to their own log. Having followers pull from the leader has the nice
+property of allowing the followers to naturally batch together log entries they are applying to their log.
+
+As with most distributed systems, automatically handling failures requires a precise definition of what does it mean for a node to be "alive". In Kafka, a
+special node called `controller` is responsible for registration of nodes in a Kafka cluster. Broker liveness has two conditions:
+1. Brokers must maintain an active session with the controller to receive regular metadata updates.
+2. Brokers acting as followers must replicate writes to the leader and not fall "too far behind".
+
+What is meant by "active session" depends on the cluster configuration. For **KRaft** clusters, an active session mean undoes need to send heart beats periodically
+to the controller. If controller fails to receive a heartbeat before the timeout configured by `broker.session.timeout.ms`, the node is considered offline.
+
+For clusters managed by **Zookeeper**, liveliness is indirectly determined through the existence of ephemeral nodes created by the broker on its initialization of 
+Zookeeper session. If the broker losses its session after failing to send heartbeats to Zookeeper before expiration of `zookeeper.session.timeout.ms`, then the node
+gets deleted. The controller would then notice the node deletion through a Zookeeper watch and mark the broker offline.
+
+We refer to brokers satisfying both of these two conditions as being "in sync" to avoid vagueness of "alive" or "failed". The leader keeps track of the set of its
+"in sync" replicas, also known as **ISR**. If either of these condition fail to satisfy the constraints, the broker will be removed form the ISR. For example if a
+follower dies, the controller would notice through the loss of its session and would remove the broker from the ISR. On the other hand if the node lags too far
+behind the leader but still maintain its session, the broker can remove it from ISR. The determination of lagging replicas is controlled through the `replica.lag.time.max.ms`
+configuration. Replicas that cannot catch up to the end of the leader's log within the max time set by that configuration, are removed from the ISR.
+
+In distributed system terminology Kafka only attempts to handle a "failure/recover" scenario when a node suddenly cease to exists and then later recover (perhaps not 
+knowing it was gone). Kafka will not handle so called "byzantine" failures in which nodes produce arbitrary or malicious response (due to a bug or foul play).
+
+We can now more precisely define that a message is considered commited when all replicas in the ISR of that partition have applied it to their log. Only commited
+messages are sent to the consumers. This means the consumer would not need to worry about potentially seeing a message that could be lost in case of leader failure.
+Producers, on the other hand, have the option to either wait for a message to be commited or not, depending on their preference for tradeoff between latency and durability.
+This presence is controlled by the acks setting that the producer users. Note that topics have setting for **minimum number** of in-sync replicas that is checked when the
+producer requests acknowledgment that a message has been written to the full set of in-sync replicas.
+
+> If a less stringent acknowledgement is requested by the producer, then the message can be commited, and consumed, even if the number of in-sync replicas is lower than the
+> minimum (e.g. it can be as low as just the leader).
+
+The guarantee that Kafka offers is that a commited message will not be lost, as long as there is at least one in-sync replica alive, at all times. Kafka will remain available
+in the presence of a node failures after a short fail-over period, but may not remain available in presence of network partitions (CAP theorem).
