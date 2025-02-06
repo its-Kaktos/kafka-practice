@@ -7,22 +7,22 @@
     * [Topics](#topics)
     * [Topic partitions](#topic-partitions)
   * [Use cases](#use-cases)
-  * [Design choices of Kafka](#design-choices-of-kafka)
+  * [4. Design choices of Kafka](#4-design-choices-of-kafka)
       * [Sources](#sources-1)
-    * [Motivation](#motivation)
-    * [Persistence](#persistence)
+    * [4.1 Motivation](#41-motivation)
+    * [4.2 Persistence](#42-persistence)
       * [Don't fear file systems!](#dont-fear-file-systems)
-      * [Efficiency](#efficiency)
+    * [4.3 Efficiency](#43-efficiency)
       * [End-to-end batch compression](#end-to-end-batch-compression)
-    * [The producer](#the-producer)
+    * [4.4 The producer](#44-the-producer)
       * [Load balancing](#load-balancing)
       * [Asynchronous read](#asynchronous-read)
-    * [The consumer](#the-consumer)
+    * [4.5 The consumer](#45-the-consumer)
       * [Push vs. pull](#push-vs-pull)
       * [Consumer position](#consumer-position)
       * [offline data load](#offline-data-load)
       * [Static membership](#static-membership)
-    * [Message delivery semantics](#message-delivery-semantics)
+    * [4.6 Message delivery semantics](#46-message-delivery-semantics)
       * [Semantics from producer point of view](#semantics-from-producer-point-of-view)
       * [Semantics from the consumer point of view](#semantics-from-the-consumer-point-of-view)
       * [Other](#other)
@@ -74,13 +74,13 @@ To make the data fault-tolerant, each topic can be replicated across multiple ge
 
 TODO
 
-## Design choices of Kafka
+## 4. Design choices of Kafka
 
 #### Sources
 
 * https://kafka.apache.org/documentation/#design
 
-### Motivation
+### 4.1 Motivation
 
 They wanted to create a system where all the real-time data feeds of a system could be handled at a large scale,
 this explains some of the design choices that were made.
@@ -93,7 +93,7 @@ This system need to fulfil these requirements:
 
 Supporting all the above made Kafka closer to a database log rather than a traditional messaging system.
 
-### Persistence
+### 4.2 Persistence
 
 #### Don't fear file systems!
 
@@ -118,7 +118,7 @@ a partition want the latest events, these events will end up on the OS page cach
 to use a IO operation to get the latest events, instead it can serve them from the main memory, and this is why read
 speed of Kafka can be as fast as possible.
 
-#### Efficiency
+### 4.3 Efficiency
 
 Because of how Kafka handles IO operations, disk access pattern have been eliminated. But we still have two more
 inefficiency to resolve:
@@ -166,7 +166,7 @@ message to validate it's content (E.g.: validate the number of messages in a bat
 but will **NOT** alter or decompress the batch message that is sent from the producer when storing them to the log file or when
 kafka is sending events to consumers.
 
-### The producer
+### 4.4 The producer
 
 #### Load balancing
 
@@ -195,7 +195,7 @@ to accumulate more bytes (AKA batch events) before sending them to the broker. T
 a fixed number of messages and to wait no longer than a fixed latency bound (say 64K and 10ms). Batching is configurable
 and give a mechanism to trade off a small amount of latency for better throughput.
 
-### The consumer
+### 4.5 The consumer
 
 The Kafka consumer works by issuing a `fetch` request to the brokers leading the partitions it wants to consumer. The consumer
 sends its offset in the log with each request and receives back a chunk of messages to be processed, this mechanism allows
@@ -285,7 +285,7 @@ will detect the broker version and then throws an `UnsupportedException`. If you
 for different instances, a fencing mechanism on the broker side will inform your duplicate client to shut down immediately
 by triggering a `org.apache.kafka.common.errors.FencedInstanceIdException`.
 
-### Message delivery semantics
+### 4.6 Message delivery semantics
 
 Kafka provides some guarantees for consumers and publishers for message delivery. There are multiple possible message delivery
 semantics that can be provided:
