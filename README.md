@@ -26,6 +26,11 @@
       * [Semantics from producer point of view](#semantics-from-producer-point-of-view)
       * [Semantics from the consumer point of view](#semantics-from-the-consumer-point-of-view)
       * [Other](#other)
+    * [4.7 Replication](#47-replication)
+      * [Replicated logs: Quorums, ISRs, and state machines (Oh my!)](#replicated-logs-quorums-isrs-and-state-machines-oh-my)
+      * [Unclean leader election: What if they all die?](#unclean-leader-election-what-if-they-all-die)
+      * [Availability and durability guarantees](#availability-and-durability-guarantees)
+      * [Replica management](#replica-management)
 <!-- TOC -->
 
 # What is this repo?
@@ -409,3 +414,72 @@ producer requests acknowledgment that a message has been written to the full set
 
 The guarantee that Kafka offers is that a commited message will not be lost, as long as there is at least one in-sync replica alive, at all times. Kafka will remain available
 in the presence of a node failures after a short fail-over period, but may not remain available in presence of network partitions (CAP theorem).
+
+#### Replicated logs: Quorums, ISRs, and state machines (Oh my!)
+
+> Note that this is a shorthand version of what is written in the Kafka logs.
+
+At its heart a Kafka partition is a replicated log. The replicated log is one of the most basic primitive in distributed systems, and there are many ways to implement one.
+The fundamental guarantee a log replication system must provide is that if it tells a client a message is commited, and the leader fails, the new leader must also have that
+message. 
+
+If you choose the number of acknowledgements required to consider a message committed and the number logs that needs to be compared to elect a leader such that there is 
+guaranteed to be an overlap, then this is called a Quorum. 
+A common approach to this tradeoff is the majority vote for both commited messages and leader election. **This is not what Kafka does**. The majority vote has a nice property
+that the latency is dependent only on the fastest servers. That is if the replication factor is three, the latency is determined by the faster follower, not the slower.
+The downside of majority vote is that it does not take many failures to leave you with no electable leaders. To tolerate one failure requires three copy of data, and to tolerate
+two requires five copies. In Kafka's experience having only enough redundancy for a single failure is not enough for practical system, but doing every write five times, with 5x the
+disk space is not practical for large volume data problems.
+
+Kafka takes a slightly different approach to choose its quorum set. Instead of the majority vote, Kafka dynamically maintains a set of in-sync replicas (ISR) that are caught up to
+the leader. Only members of this set are eligible for election as leader. A write to Kafka partition is not considered commited until all in-sync replicas have received the write.
+This ISR is persisted in the cluster metadata when ever it changes. Because of this, every replica in the ISR is eligible for leader election. With ISR model and **f+1** replicas,
+a Kafka topic can handle **f** failures without losing commited messages. The client (producer) still can choose to wait for acknowledgement or not.
+
+Another important design distinction is that Kafka does not require nodes to recover with all their data intact. It is not uncommon for replication algorithms to depend on "stable
+storage" that can not be lost in any failure-recover scenario without potential consistency violation. There are two primary problems with this assumption. First one is that disk
+errors are one of the most common errors encountered in the real world, and they often do not leave the data intact. Secondly, even if that were not a problem, requiring to use
+**fsync** on every write for Kafka's consistency guarantees would reduce performance by two to three orders of magnitude. Kafka's protocol for allowing a replica to rejoin the 
+ISR ensures that before joining, it must fully re-sync again even if it lost un-flushed data in its crash.
+
+#### Unclean leader election: What if they all die?
+
+Note that Kafka's guarantees regarding data loss only holds true as long as there is at least one in-sync replica available at all time. If all nodes replicating a partition die,
+this guarantee no long holds.
+
+However, a practical system needs to do something when all replicas die. There are two behaviours that could be implemented:
+1. Waiting for **an in-sync replica** to come back to life and elect it as the leader, *hoping that it still holds all its data*
+2. Electing the first replica (not necessarily in the ISR) that comes back to life as the leader.
+
+This is a simple trade-off between availability and consistency. If we choose the first, then we will remain unavailable as long as those replicas (ISRs) are down. If no ISR come
+back to life or if our data in the ISRs are destroyed we will be permanently down. On the other hand, if we let the first non-in-sync replica that comes back to life to be the leader,
+that replica's log will become the source of truth, even though there is no guarantee that states it will have every commited message.
+
+By default, from the version `0.11.0.0`, Kafka chooses the first strategy. We can change this using the configuration property of `unclean.leader.election.enable`.
+
+
+#### Availability and durability guarantees
+
+When writing to Kafka, producers can choose to wait for either 0, 1 or all replica acknowledgement. But, keep in mind that "acknowledgement by all replicas" does **NOT** guarantee that
+full set off assigned replicas received the message. By default, when `acks=all`, the acknowledgement happens as soon as all **current** in-sync replicas have received the message. For
+example, if a topic is configured to have two replicas, and one fails (i.e, only one in-sync replica remains), then the writes that specify `acks=all` will succeed. However, this writes
+can be lost if the remaining replica also fails. Although, this ensures maximum availability of the partition, some users may find this undesirable if they prefer durability to availability.
+Therefore, Kafka provides two topic-level configuration that can be used to prefer message duravility over availability:
+1. Disable unclean leader election. If this configuration is set, it means that if all replicas become unavailable, then the partition will become unavailable until the most recent 
+leader becomes available again. This effectively prefers unavailability over the risk of message loss.
+2. Specify a minimum ISR size. The partition will accept writes only if the number of ISR is above the configured size, in order to prevent the loss of messages that were written to only
+a single replica, which subsequently becomes unavailable. This setting only takes effect if the producer uses `acks=all`, then this setting guarantees that at least the minimum number of
+replicas need to acknowledge the message before considering that message as commited.
+
+> The leader is also part of the ISR set. If the `min.insync.replicas=1` that means it is sufficient that only the leader acknowledge the message.
+
+#### Replica management
+
+The above discussion only covers a single log, i.e. one topic partition. But what if we have hundreds or thousands of partitions? Kafka attempts to balance the partition between the cluster
+in a round-robin fashion to avoid clustering all partition for high-volume topics on a small number of nodes. Likewise, Kafka also try to balance leadership so that each node is the leader
+for a proportional share of its partitions.
+
+It is also important to optimize leader election because that will decrease the window of unavailability. A naive implementation would end up running an election for all the partition a node
+hosted, if that node fails. As mentioned before, a Kafka cluster has a special role called "controller". A controller is responsible for managing registration of brokers. If the controller 
+detects the failure of a node, it is responsible for choosing a new leader from the ISR set. The result is that Kafka is able to batch together many of the required leadership change 
+notifications which makes election far cheaper and faster for a large number of partitions. If the controller itself fails, then another controller will be selected.
