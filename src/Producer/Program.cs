@@ -1,3 +1,6 @@
+using System.Text.Json;
+using Confluent.Kafka;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -12,30 +15,30 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+// app.UseHttpsRedirection();
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
+app.MapPost("/produce-single", async (ILogger<Program> logger) =>
     {
-        var forecast = Enumerable.Range(1, 5).Select(index =>
-                new WeatherForecast
-                (
-                    DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                    Random.Shared.Next(-20, 55),
-                    summaries[Random.Shared.Next(summaries.Length)]
-                ))
-            .ToArray();
-        return forecast;
+        var config = new ProducerConfig()
+        {
+            Acks = Acks.Leader,
+            BootstrapServers = "localhost:9092"
+        };
+
+        using var p = new ProducerBuilder<Null, string>(config).Build();
+
+        var x = await p.ProduceAsync("topic", new Message<Null, string>()
+        {
+            // Key = new Null(),
+            Headers = null,
+            Timestamp = new Timestamp(DateTime.Now, TimestampType.CreateTime),
+            Value = "hello this message was created at " + DateTime.Now
+        });
+
+        logger.LogInformation("produced single event to Kafka {Result}", JsonSerializer.Serialize(x));
+
+        return Results.Ok(x);
     })
-    .WithName("GetWeatherForecast");
+    .WithName("ProduceSingle");
 
-app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
+await app.RunAsync();
