@@ -22,7 +22,7 @@ public sealed class ProduceBackgroundService : BackgroundService
             MessageSendMaxRetries = 10,
             EnableIdempotence = true,
             StatisticsIntervalMs = 10_000,
-            Debug = "broker,topic,msg"
+            // Debug = "broker,topic,msg"
         };
 
         _producer = new ProducerBuilder<Null, string>(config)
@@ -45,7 +45,7 @@ public sealed class ProduceBackgroundService : BackgroundService
 
             _logger.LogInformation("produced single event to Kafka, time {Time}", DateTime.Now.ToString("O", CultureInfo.CurrentCulture));
 
-            await Task.Delay(1_000, stoppingToken);
+            // await Task.Delay(1_000, stoppingToken);
         }
     }
 

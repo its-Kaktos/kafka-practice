@@ -15,10 +15,16 @@ public sealed class ConsumerBackgroundService : BackgroundService
         {
             GroupId = "practice-kafka-consumer-group",
             BootstrapServers = "localhost:9092",
-            AutoOffsetReset = AutoOffsetReset.Earliest
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            StatisticsIntervalMs = 10_000,
+            // Debug = "broker,topic,msg"
         };
 
-        _consumer = new ConsumerBuilder<Null, string>(conf).Build();
+        _consumer = new ConsumerBuilder<Null, string>(conf)
+            // .SetLogHandler((_, message) => _logger.LogInformation(JsonSerializer.Serialize(message)))
+            .SetErrorHandler((_, error) => _logger.LogError("Error occured in Kafka consumer, error is {Error}", JsonSerializer.Serialize(error)))
+            .SetStatisticsHandler((_, s) => _logger.LogInformation(s))
+            .Build();
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -33,6 +39,7 @@ public sealed class ConsumerBackgroundService : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             var result = _consumer.Consume(stoppingToken);
+
             _logger.LogInformation("Consumed result: {Result}", JsonSerializer.Serialize(result));
         }
 
