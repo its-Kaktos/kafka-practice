@@ -1,14 +1,15 @@
 using System.Text.Json;
 using Confluent.Kafka;
+using ILogger = Serilog.ILogger;
 
 namespace Consumer;
 
 public sealed class ConsumerBackgroundService : BackgroundService
 {
     private readonly IConsumer<Null, string> _consumer;
-    private readonly ILogger<ConsumerBackgroundService> _logger;
+    private readonly ILogger _logger;
 
-    public ConsumerBackgroundService(ILogger<ConsumerBackgroundService> logger)
+    public ConsumerBackgroundService(ILogger logger)
     {
         _logger = logger;
         var conf = new ConsumerConfig()
@@ -17,13 +18,13 @@ public sealed class ConsumerBackgroundService : BackgroundService
             BootstrapServers = "localhost:9092",
             AutoOffsetReset = AutoOffsetReset.Earliest,
             StatisticsIntervalMs = 10_000,
-            // Debug = "broker,topic,msg"
+            // Debug = "broker,topic,msg",
         };
 
         _consumer = new ConsumerBuilder<Null, string>(conf)
             // .SetLogHandler((_, message) => _logger.LogInformation(JsonSerializer.Serialize(message)))
-            .SetErrorHandler((_, error) => _logger.LogError("Error occured in Kafka consumer, error is {Error}", JsonSerializer.Serialize(error)))
-            .SetStatisticsHandler((_, s) => _logger.LogInformation(s))
+            .SetErrorHandler((_, error) => _logger.Error("Error occured in Kafka consumer, error is {@Error}", error))
+            .SetStatisticsHandler((_, s) => _logger.Information("Statics logs from Kafka {@Statistics}", JsonSerializer.Deserialize<KafkaStatisticsDto>(s)))
             .Build();
     }
 
@@ -40,7 +41,7 @@ public sealed class ConsumerBackgroundService : BackgroundService
         {
             var result = _consumer.Consume(stoppingToken);
 
-            _logger.LogInformation("Consumed result: {Result}", JsonSerializer.Serialize(result));
+            _logger.Information("Consumed result: {@Result}", result);
         }
 
         return Task.CompletedTask;
